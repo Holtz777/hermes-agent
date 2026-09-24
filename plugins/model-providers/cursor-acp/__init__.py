@@ -22,10 +22,21 @@ from providers import register_provider
 from providers.base import ProviderProfile
 
 _DEFAULT_MODE = "ask"
+# Replaces the shim's "Use ACP capabilities" preamble: in ask mode Cursor otherwise refuses
+# ("switch to Agent mode") instead of handing the action back to Hermes as a tool call.
+_ASK_MODE_PREAMBLE = (
+    "You are the language model behind Hermes, a separate agent host that owns every tool.",
+    "This Cursor session is read-only on purpose: do NOT use Cursor's own tools and never ask the user to switch modes.",
+    "To take an action, output tool calls as <tool_call>{...}</tool_call> blocks with JSON exactly in OpenAI "
+    "function-call shape, using only the tools listed below. Hermes runs them and returns the results next turn.",
+    "If no tool is needed, answer normally.",
+)
 
 
 def _client_class() -> type:
-    from agent.copilot_acp_client import CopilotACPClient
+    from agent.copilot_acp_client import _PROMPT_PREAMBLE, CopilotACPClient
+
+    shim_preamble = "\n\n".join(_PROMPT_PREAMBLE)
 
     class CursorACPClient(CopilotACPClient):
         """Copilot ACP shim adapted to ``cursor-agent acp``."""
@@ -43,6 +54,11 @@ def _client_class() -> type:
                 if self._mode != "agent":
                     request("session/set_mode", {"sessionId": session_id, "modeId": self._mode})
                 yield session, request
+
+        def _run_prompt(self, prompt_text: str, **kwargs: Any) -> tuple[str, str]:
+            if self._mode != "agent" and prompt_text.startswith(shim_preamble):
+                prompt_text = "\n\n".join(_ASK_MODE_PREAMBLE) + prompt_text[len(shim_preamble):]
+            return super()._run_prompt(prompt_text, **kwargs)
 
         def _handle_server_message(self, msg: dict[str, Any], **kwargs: Any) -> bool:
             method = msg.get("method")
